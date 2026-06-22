@@ -13,6 +13,18 @@ pub struct CopiedAsset {
     pub bundled: String,
     /// the resolved (canonical) source path, for git-status checks
     pub source: PathBuf,
+    /// SHA-256 of the file, for integrity verification
+    pub sha256: String,
+}
+
+/// Lowercase hex SHA-256 of a file's contents.
+pub fn sha256_hex(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 /// Copy every referenced file into `assets_dir`, returning one entry per
@@ -29,21 +41,21 @@ pub fn copy_assets(
         .unwrap_or_else(|_| md_dir.to_path_buf());
     let mut copied = Vec::new();
     let mut used_names: HashSet<String> = HashSet::new();
-    let mut bundled_by_source: HashMap<PathBuf, String> = HashMap::new();
+    let mut bundled_by_source: HashMap<PathBuf, (String, String)> = HashMap::new();
     for reference in refs {
         let Some(source) = resolve_within(&base, &reference.path) else {
             continue;
         };
-        let bundled = match bundled_by_source.get(&source) {
+        let (bundled, sha256) = match bundled_by_source.get(&source) {
             Some(existing) => existing.clone(),
             None => {
                 let name = unique_name(&source, &mut used_names);
                 std::fs::create_dir_all(assets_dir)?;
                 std::fs::copy(&source, assets_dir.join(&name))
                     .with_context(|| format!("copying {}", source.display()))?;
-                let bundled = format!("assets/{name}");
-                bundled_by_source.insert(source.clone(), bundled.clone());
-                bundled
+                let entry = (format!("assets/{name}"), sha256_hex(&source)?);
+                bundled_by_source.insert(source.clone(), entry.clone());
+                entry
             }
         };
         copied.push(CopiedAsset {
@@ -51,6 +63,7 @@ pub fn copy_assets(
             span: reference.span.clone(),
             bundled,
             source,
+            sha256,
         });
     }
     Ok(copied)

@@ -1,6 +1,6 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Snapshot {
     pub source: String,
     pub created_at: String,
@@ -11,14 +11,16 @@ pub struct Snapshot {
     pub git: Option<GitMeta>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct AssetEntry {
     pub bundled: String,
     /// per-asset git status: clean / modified / untracked / outside-repo
     pub git_status: String,
+    /// SHA-256 of the bundled file, for integrity verification
+    pub sha256: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct GitMeta {
     pub commit: String,
     #[serde(skip_serializing_if = "Option::is_none")]

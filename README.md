@@ -16,9 +16,10 @@ cargo install --path .
 ## Usage
 
 ```sh
-mdsnap report.md -o bundle/
-mdsnap report.md -o bundle/ --diff          # also save the uncommitted diff
-mdsnap report.md -o bundle/ --allow-dirty   # bundle even if assets are uncommitted
+mdsnap snap report.md -o bundle/
+mdsnap snap report.md -o bundle/ --diff          # also save the uncommitted diff
+mdsnap snap report.md -o bundle/ --allow-dirty   # bundle even if assets are uncommitted
+mdsnap verify bundle/                            # check the bundled assets are intact
 ```
 
 Produces:
@@ -27,7 +28,7 @@ Produces:
 bundle/
   report.md         # paths rewritten to assets/
   assets/           # copied images and files (external URLs are left alone)
-  snapshot.json     # commit, branch, reproducible flag, per-asset git status
+  snapshot.json     # commit, reproducible flag, per-asset git status + SHA-256
   diff.patch        # only with --diff, when the working tree is dirty
 ```
 
@@ -36,7 +37,7 @@ bundle/
 A self-contained example with mock data only lives in [`examples/`](examples/):
 
 ```sh
-mdsnap examples/report.md -o /tmp/demo
+mdsnap snap examples/report.md -o /tmp/demo
 ```
 
 `examples/report.md` references one chart as a markdown image and one as an HTML
@@ -64,3 +65,6 @@ false`).
 `--diff` writes `diff.patch` with the uncommitted changes (tracked, untracked
 and binary). Review it before sharing, it can contain secrets from the working
 tree. Data outside git (e.g. gitignored datasets) is out of scope and not bundled.
+
+`mdsnap verify <bundle>` re-hashes the bundled assets against the SHA-256 in
+`snapshot.json`, so you can prove a bundle was not altered.
