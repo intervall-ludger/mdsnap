@@ -17,7 +17,8 @@ cargo install --path .
 
 ```sh
 mdsnap report.md -o bundle/
-mdsnap report.md -o bundle/ --diff   # also save the uncommitted diff when dirty
+mdsnap report.md -o bundle/ --diff          # also save the uncommitted diff
+mdsnap report.md -o bundle/ --allow-dirty   # bundle even if assets are uncommitted
 ```
 
 Produces:
@@ -26,7 +27,7 @@ Produces:
 bundle/
   report.md         # paths rewritten to assets/
   assets/           # copied images and files (external URLs are left alone)
-  snapshot.json     # commit, branch, dirty flag, remote
+  snapshot.json     # commit, branch, reproducible flag, per-asset git status
   diff.patch        # only with --diff, when the working tree is dirty
 ```
 
@@ -54,7 +55,12 @@ The external link in the report is left untouched.
 
 ## Reproducibility
 
-`snapshot.json` records the commit, branch and a `dirty` flag. A dirty tree means
-the commit alone does not reproduce the bundle, run with `--diff` to also capture
-the uncommitted changes. External data outside git (e.g. gitignored datasets) is
-out of scope and not bundled.
+`snapshot.json` records the commit, branch, a `reproducible` flag and the git
+status of every asset. mdsnap **refuses** to bundle when a referenced asset is
+uncommitted (untracked or modified), since the commit does not describe it; pass
+`--allow-dirty` to bundle anyway (the snapshot is then marked `reproducible:
+false`).
+
+`--diff` writes `diff.patch` with the uncommitted changes (tracked, untracked
+and binary). Review it before sharing, it can contain secrets from the working
+tree. Data outside git (e.g. gitignored datasets) is out of scope and not bundled.

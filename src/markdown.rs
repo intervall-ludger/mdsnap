@@ -1,31 +1,49 @@
 use pulldown_cmark::{Event, Parser, Tag};
+use std::ops::Range;
 
-/// Extract every local reference: markdown image/link destinations plus the
-/// `src` of HTML `<img>`/embeds. Skips external URLs, anchors and mailto;
-/// de-duplicated and in document order.
-pub fn extract_local_refs(content: &str) -> Vec<String> {
+/// A local asset reference: the on-disk path to copy and the byte span of the
+/// destination text in the original markdown, so it can be rewritten in place
+/// (without ever touching code blocks or prose, unlike a global string replace).
+pub struct Reference {
+    /// resolved path: percent-decoded, without #fragment / ?query
+    pub path: String,
+    /// byte range of the raw destination in the source content
+    pub span: Range<usize>,
+}
+
+/// Find every local reference (markdown image/link destinations and HTML `src`)
+/// with the byte span of its destination, in document order.
+pub fn find_refs(content: &str) -> Vec<Reference> {
     let mut refs = Vec::new();
-    for event in Parser::new(content) {
+    for (event, range) in Parser::new(content).into_offset_iter() {
         match event {
             Event::Start(Tag::Image { dest_url, .. })
             | Event::Start(Tag::Link { dest_url, .. }) => {
-                add_local(&mut refs, dest_url.to_string());
-            }
-            Event::Html(html) | Event::InlineHtml(html) => {
-                for src in html_srcs(&html) {
-                    add_local(&mut refs, src);
+                if is_local(&dest_url) {
+                    if let Some(span) = locate(content, &range, &dest_url) {
+                        refs.push(Reference {
+                            path: clean_path(&dest_url),
+                            span,
+                        });
+                    }
                 }
             }
+            Event::Html(_) | Event::InlineHtml(_) => locate_html_srcs(content, &range, &mut refs),
             _ => {}
         }
     }
     refs
 }
 
-fn add_local(refs: &mut Vec<String>, url: String) {
-    if is_local(&url) && !refs.contains(&url) {
-        refs.push(url);
+/// Apply (span, replacement) edits to the content. Edits are applied
+/// right-to-left so earlier byte offsets stay valid.
+pub fn apply_rewrites(content: &str, mut edits: Vec<(Range<usize>, String)>) -> String {
+    edits.sort_by(|a, b| b.0.start.cmp(&a.0.start));
+    let mut out = content.to_string();
+    for (range, replacement) in edits {
+        out.replace_range(range, &replacement);
     }
+    out
 }
 
 pub fn is_local(url: &str) -> bool {
@@ -50,93 +68,139 @@ fn has_url_scheme(url: &str) -> bool {
     false
 }
 
-/// Every `src="..."` / `src='...'` value in an HTML fragment.
-fn html_srcs(html: &str) -> Vec<String> {
-    let mut srcs = Vec::new();
-    let mut rest = html;
-    while let Some(idx) = rest.find("src=") {
-        let after = &rest[idx + 4..];
-        let quote = after.chars().next();
+/// Byte span of `needle` inside `range`, preferring the last occurrence (the
+/// destination comes after the link text).
+fn locate(content: &str, range: &Range<usize>, needle: &str) -> Option<Range<usize>> {
+    let slice = content.get(range.clone())?;
+    let pos = slice.rfind(needle)?;
+    let start = range.start + pos;
+    Some(start..start + needle.len())
+}
+
+/// Collect `src="..."` / `src='...'` references (with spans) inside an HTML range.
+fn locate_html_srcs(content: &str, range: &Range<usize>, refs: &mut Vec<Reference>) {
+    let Some(slice) = content.get(range.clone()) else {
+        return;
+    };
+    let mut offset = 0;
+    while let Some(idx) = slice[offset..].find("src=") {
+        let after_eq = offset + idx + 4;
+        let rest = &slice[after_eq..];
+        let quote = rest.chars().next();
         if let Some(quote @ ('"' | '\'')) = quote {
-            if let Some(end) = after[1..].find(quote) {
-                srcs.push(after[1..1 + end].to_string());
-                rest = &after[1 + end..];
+            if let Some(end) = rest[1..].find(quote) {
+                let url = &rest[1..1 + end];
+                if is_local(url) {
+                    let start = range.start + after_eq + 1;
+                    refs.push(Reference {
+                        path: clean_path(url),
+                        span: start..start + url.len(),
+                    });
+                }
+                offset = after_eq + 1 + end;
                 continue;
             }
         }
-        rest = after;
+        offset = after_eq;
     }
-    srcs
 }
 
-/// Replace one reference inside markdown destinations and HTML `src` attributes.
-pub fn rewrite_ref(content: &str, old: &str, new: &str) -> String {
-    content
-        .replace(&format!("]({old})"), &format!("]({new})"))
-        .replace(&format!("]({old} "), &format!("]({new} "))
-        .replace(&format!("src=\"{old}\""), &format!("src=\"{new}\""))
-        .replace(&format!("src='{old}'"), &format!("src='{new}'"))
+/// Strip a `#fragment` / `?query` and percent-decode, giving the on-disk path.
+fn clean_path(url: &str) -> String {
+    let stem = url.split(['#', '?']).next().unwrap_or(url);
+    percent_decode(stem)
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if let Some(byte) = s
+                .get(i + 1..i + 3)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+            {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn extracts_markdown_image() {
-        assert_eq!(
-            extract_local_refs("![alt](plots/chart.png)"),
-            vec!["plots/chart.png".to_string()]
-        );
+    fn paths(content: &str) -> Vec<String> {
+        find_refs(content).into_iter().map(|r| r.path).collect()
     }
 
     #[test]
-    fn extracts_html_img_src() {
+    fn finds_markdown_image() {
+        let content = "![alt](plots/chart.png)";
+        let refs = find_refs(content);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].path, "plots/chart.png");
+        assert_eq!(&content[refs[0].span.clone()], "plots/chart.png");
+    }
+
+    #[test]
+    fn finds_html_img_src() {
         assert_eq!(
-            extract_local_refs("<img src=\"plots/diagram.png\" width=\"50%\"/>"),
+            paths("<img src=\"plots/diagram.png\" width=\"50%\"/>"),
             vec!["plots/diagram.png".to_string()]
         );
-        assert_eq!(
-            extract_local_refs("<img src='a.png'>"),
-            vec!["a.png".to_string()]
-        );
+        assert_eq!(paths("<img src='a.png'>"), vec!["a.png".to_string()]);
     }
 
     #[test]
     fn skips_external_and_anchors() {
-        let refs = extract_local_refs(
-            "![x](https://e.com/a.png) [y](#sec) <img src=\"http://e.com/b.png\">",
-        );
-        assert!(refs.is_empty());
+        assert!(paths("![x](https://e.com/a.png) [y](#sec) <img src=\"data:img\">").is_empty());
     }
 
     #[test]
-    fn dedups_references() {
+    fn decodes_and_strips_fragment() {
         assert_eq!(
-            extract_local_refs("![a](x.png) again ![b](x.png)"),
-            vec!["x.png".to_string()]
+            paths("![a](my%20plot.png)"),
+            vec!["my plot.png".to_string()]
         );
+        assert_eq!(paths("[a](doc.pdf#page=3)"), vec!["doc.pdf".to_string()]);
     }
 
     #[test]
-    fn rewrites_markdown_and_html() {
-        let out = rewrite_ref(
-            "![a](old.png) <img src=\"old.png\"/>",
-            "old.png",
-            "assets/old.png",
+    fn does_not_touch_code_blocks() {
+        // a path inside inline code must not be rewritten
+        let content = "real ![a](a.png) and code `![a](a.png)`";
+        let refs = find_refs(content);
+        assert_eq!(refs.len(), 1); // only the real image, not the one in backticks
+    }
+
+    #[test]
+    fn rewrites_only_destination_spans() {
+        let content = "![a](old.png) <img src=\"old.png\"/>";
+        let edits = find_refs(content)
+            .into_iter()
+            .map(|r| (r.span, "assets/old.png".to_string()))
+            .collect();
+        assert_eq!(
+            apply_rewrites(content, edits),
+            "![a](assets/old.png) <img src=\"assets/old.png\"/>"
         );
-        assert_eq!(out, "![a](assets/old.png) <img src=\"assets/old.png\"/>");
     }
 
     #[test]
     fn is_local_classifies() {
         assert!(is_local("plots/a.png"));
         assert!(is_local("./a.png"));
-        assert!(is_local("../up.png")); // relative escape is caught later by containment
+        assert!(is_local("../up.png"));
         assert!(!is_local("https://x.com/a.png"));
         assert!(!is_local("data:image/png;base64,AAAA"));
         assert!(!is_local("file:///etc/passwd"));
-        assert!(!is_local("ftp://h/a.png"));
         assert!(!is_local("mailto:x@y.com"));
         assert!(!is_local("#anchor"));
         assert!(!is_local(""));

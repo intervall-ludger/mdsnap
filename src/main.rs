@@ -48,7 +48,7 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&cli.out).with_context(|| format!("creating {}", cli.out.display()))?;
 
     // 1. copy referenced assets into the bundle
-    let refs = markdown::extract_local_refs(&content);
+    let refs = markdown::find_refs(&content);
     let copied = assets::copy_assets(&refs, &md_dir, &cli.out.join("assets"))?;
 
     // 2. per-asset git status + reproducibility gate
@@ -67,11 +67,12 @@ fn main() -> Result<()> {
         bail!("bundle would not be reproducible; commit the assets or re-run with --allow-dirty");
     }
 
-    // 3. rewrite the markdown to point at the bundled assets
-    let mut rewritten = content.clone();
-    for asset in &copied {
-        rewritten = markdown::rewrite_ref(&rewritten, &asset.original, &asset.bundled);
-    }
+    // 3. rewrite the markdown to point at the bundled assets (in place, by span)
+    let edits = copied
+        .iter()
+        .map(|asset| (asset.span.clone(), asset.bundled.clone()))
+        .collect();
+    let rewritten = markdown::apply_rewrites(&content, edits);
     std::fs::write(cli.out.join(&report_name), &rewritten)?;
 
     // 4. git snapshot (+ optional diff when dirty)
@@ -81,6 +82,10 @@ fn main() -> Result<()> {
                 match git_info::diff(&md_dir)? {
                     Some(patch) => {
                         std::fs::write(cli.out.join("diff.patch"), patch)?;
+                        eprintln!(
+                            "warning: diff.patch captures all uncommitted changes \
+                             (incl. untracked); review before sharing, it may hold secrets"
+                        );
                         Some("diff.patch".to_string())
                     }
                     None => None,
@@ -99,19 +104,22 @@ fn main() -> Result<()> {
         None => None,
     };
 
-    // 5. write snapshot.json
+    // 5. write snapshot.json (one entry per bundled asset, deduplicated)
+    let mut seen = std::collections::HashSet::new();
+    let asset_entries: Vec<snapshot::AssetEntry> = copied
+        .iter()
+        .zip(&statuses)
+        .filter(|(asset, _)| seen.insert(asset.bundled.clone()))
+        .map(|(asset, status)| snapshot::AssetEntry {
+            bundled: asset.bundled.clone(),
+            git_status: status.as_str().to_string(),
+        })
+        .collect();
     let snap = snapshot::Snapshot {
         source: cli.input.display().to_string(),
         created_at: chrono::Utc::now().to_rfc3339(),
         reproducible,
-        assets: copied
-            .iter()
-            .zip(&statuses)
-            .map(|(asset, status)| snapshot::AssetEntry {
-                bundled: asset.bundled.clone(),
-                git_status: status.as_str().to_string(),
-            })
-            .collect(),
+        assets: asset_entries,
         git: git_meta,
     };
     std::fs::write(

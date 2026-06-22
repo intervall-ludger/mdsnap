@@ -47,7 +47,11 @@ pub fn diff(start: &Path) -> Result<Option<String>> {
         Ok(head) => head.peel_to_tree()?,
         Err(_) => return Ok(None),
     };
-    let diff = repo.diff_tree_to_workdir_with_index(Some(&head_tree), None)?;
+    let mut options = git2::DiffOptions::new();
+    options.include_untracked(true);
+    options.show_untracked_content(true);
+    options.show_binary(true);
+    let diff = repo.diff_tree_to_workdir_with_index(Some(&head_tree), Some(&mut options))?;
     let mut buffer = String::new();
     diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
         if matches!(line.origin(), '+' | '-' | ' ') {
