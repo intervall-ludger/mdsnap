@@ -38,7 +38,7 @@ pub fn find_refs(content: &str) -> Vec<Reference> {
 /// Apply (span, replacement) edits to the content. Edits are applied
 /// right-to-left so earlier byte offsets stay valid.
 pub fn apply_rewrites(content: &str, mut edits: Vec<(Range<usize>, String)>) -> String {
-    edits.sort_by(|a, b| b.0.start.cmp(&a.0.start));
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
     let mut out = content.to_string();
     for (range, replacement) in edits {
         out.replace_range(range, &replacement);
