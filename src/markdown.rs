@@ -29,12 +29,25 @@ fn add_local(refs: &mut Vec<String>, url: String) {
 }
 
 pub fn is_local(url: &str) -> bool {
-    !url.is_empty()
-        && !url.starts_with("http://")
-        && !url.starts_with("https://")
-        && !url.starts_with("//")
-        && !url.starts_with("mailto:")
-        && !url.starts_with('#')
+    !url.is_empty() && !url.starts_with('#') && !url.starts_with("//") && !has_url_scheme(url)
+}
+
+/// True if `url` starts with a URL scheme like `http:`, `data:`, `file:`, `ftp:`
+/// (also a Windows drive letter `C:`); such references are never local paths.
+fn has_url_scheme(url: &str) -> bool {
+    let mut chars = url.chars();
+    if !chars.next().is_some_and(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    for c in chars {
+        if c == ':' {
+            return true;
+        }
+        if !(c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')) {
+            return false;
+        }
+    }
+    false
 }
 
 /// Every `src="..."` / `src='...'` value in an HTML fragment.
@@ -119,7 +132,12 @@ mod tests {
     fn is_local_classifies() {
         assert!(is_local("plots/a.png"));
         assert!(is_local("./a.png"));
+        assert!(is_local("../up.png")); // relative escape is caught later by containment
         assert!(!is_local("https://x.com/a.png"));
+        assert!(!is_local("data:image/png;base64,AAAA"));
+        assert!(!is_local("file:///etc/passwd"));
+        assert!(!is_local("ftp://h/a.png"));
+        assert!(!is_local("mailto:x@y.com"));
         assert!(!is_local("#anchor"));
         assert!(!is_local(""));
     }

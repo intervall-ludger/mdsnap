@@ -4,9 +4,18 @@ use serde::Serialize;
 pub struct Snapshot {
     pub source: String,
     pub created_at: String,
-    pub assets: Vec<String>,
+    /// true when every asset's exact bytes are captured by the recorded commit
+    pub reproducible: bool,
+    pub assets: Vec<AssetEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git: Option<GitMeta>,
+}
+
+#[derive(Serialize)]
+pub struct AssetEntry {
+    pub bundled: String,
+    /// per-asset git status: clean / modified / untracked / outside-repo
+    pub git_status: String,
 }
 
 #[derive(Serialize)]

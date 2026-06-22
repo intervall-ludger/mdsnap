@@ -5,6 +5,7 @@ mod snapshot;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
+use git_info::AssetStatus;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -19,9 +20,12 @@ struct Cli {
     /// target directory for the bundle
     #[arg(short, long)]
     out: PathBuf,
-    /// also store the uncommitted diff (diff.patch) for full reproducibility
+    /// also store the uncommitted diff (diff.patch)
     #[arg(long)]
     diff: bool,
+    /// bundle even when referenced assets are uncommitted (not reproducible)
+    #[arg(long)]
+    allow_dirty: bool,
 }
 
 fn main() -> Result<()> {
@@ -47,14 +51,30 @@ fn main() -> Result<()> {
     let refs = markdown::extract_local_refs(&content);
     let copied = assets::copy_assets(&refs, &md_dir, &cli.out.join("assets"))?;
 
-    // 2. rewrite the markdown to point at the bundled assets
+    // 2. per-asset git status + reproducibility gate
+    let statuses: Vec<AssetStatus> = copied
+        .iter()
+        .map(|asset| git_info::asset_status(&md_dir, &asset.source))
+        .collect();
+    let reproducible = !statuses.iter().any(|status| status.is_uncommitted());
+    if !reproducible && !cli.allow_dirty {
+        eprintln!("error: referenced asset(s) are not captured by the commit:");
+        for (asset, status) in copied.iter().zip(&statuses) {
+            if status.is_uncommitted() {
+                eprintln!("  {} ({})", asset.original, status.as_str());
+            }
+        }
+        bail!("bundle would not be reproducible; commit the assets or re-run with --allow-dirty");
+    }
+
+    // 3. rewrite the markdown to point at the bundled assets
     let mut rewritten = content.clone();
     for asset in &copied {
         rewritten = markdown::rewrite_ref(&rewritten, &asset.original, &asset.bundled);
     }
     std::fs::write(cli.out.join(&report_name), &rewritten)?;
 
-    // 3. git snapshot (+ optional diff when dirty)
+    // 4. git snapshot (+ optional diff when dirty)
     let git_meta = match git_info::inspect(&md_dir)? {
         Some(info) => {
             let diff_file = if cli.diff && info.dirty {
@@ -79,11 +99,19 @@ fn main() -> Result<()> {
         None => None,
     };
 
-    // 4. write snapshot.json
+    // 5. write snapshot.json
     let snap = snapshot::Snapshot {
         source: cli.input.display().to_string(),
         created_at: chrono::Utc::now().to_rfc3339(),
-        assets: copied.iter().map(|asset| asset.bundled.clone()).collect(),
+        reproducible,
+        assets: copied
+            .iter()
+            .zip(&statuses)
+            .map(|(asset, status)| snapshot::AssetEntry {
+                bundled: asset.bundled.clone(),
+                git_status: status.as_str().to_string(),
+            })
+            .collect(),
         git: git_meta,
     };
     std::fs::write(
@@ -98,9 +126,13 @@ fn main() -> Result<()> {
 fn print_summary(cli: &Cli, copied: &[assets::CopiedAsset], snap: &snapshot::Snapshot) {
     println!("bundled {} -> {}", cli.input.display(), cli.out.display());
     println!("  {} asset(s)", copied.len());
+    println!(
+        "  reproducible: {}",
+        if snap.reproducible { "yes" } else { "no" }
+    );
     match &snap.git {
         Some(git) => {
-            let short = &git.commit[..git.commit.len().min(12)];
+            let short = git.commit.get(..12).unwrap_or(&git.commit);
             let dirty = if git.dirty { " (dirty)" } else { "" };
             println!("  commit {short}{dirty}");
             if git.dirty && !cli.diff {

@@ -58,3 +58,50 @@ pub fn diff(start: &Path) -> Result<Option<String>> {
     })?;
     Ok(Some(buffer))
 }
+
+/// Git status of a single asset relative to HEAD. This per-asset signal is what
+/// the reproducibility gate uses, not the repo-wide dirty flag (which trips on
+/// any unrelated change).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AssetStatus {
+    Clean,
+    Modified,
+    Untracked,
+    OutsideRepo,
+}
+
+impl AssetStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AssetStatus::Clean => "clean",
+            AssetStatus::Modified => "modified",
+            AssetStatus::Untracked => "untracked",
+            AssetStatus::OutsideRepo => "outside-repo",
+        }
+    }
+
+    /// Whether the asset is not captured by the commit (modified or untracked).
+    /// `clean` and `outside-repo` are not blocking.
+    pub fn is_uncommitted(self) -> bool {
+        matches!(self, AssetStatus::Modified | AssetStatus::Untracked)
+    }
+}
+
+/// Status of `asset` (an absolute path) in the repo containing `start`.
+pub fn asset_status(start: &Path, asset: &Path) -> AssetStatus {
+    let Ok(repo) = Repository::discover(start) else {
+        return AssetStatus::OutsideRepo;
+    };
+    let Some(workdir) = repo.workdir().and_then(|w| w.canonicalize().ok()) else {
+        return AssetStatus::OutsideRepo;
+    };
+    let Ok(rel) = asset.strip_prefix(&workdir) else {
+        return AssetStatus::OutsideRepo;
+    };
+    match repo.status_file(rel) {
+        Ok(status) if status.is_empty() => AssetStatus::Clean,
+        Ok(status) if status.contains(git2::Status::WT_NEW) => AssetStatus::Untracked,
+        Ok(_) => AssetStatus::Modified,
+        Err(_) => AssetStatus::OutsideRepo,
+    }
+}
