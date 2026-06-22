@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120">
+  <rect width="240" height="120" fill="#f5f5f5"/>
+  <polygon points="20,20 220,20 160,100 80,100" fill="#2ca25f"/>
+  <text x="20" y="115" font-family="monospace" font-size="10">mock funnel</text>
+</svg>

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120">
+  <rect width="240" height="120" fill="#f5f5f5"/>
+  <rect x="20" y="50" width="40" height="50" fill="#08519c"/>
+  <rect x="80" y="25" width="40" height="75" fill="#08519c"/>
+  <rect x="140" y="65" width="40" height="35" fill="#08519c"/>
+  <text x="20" y="115" font-family="monospace" font-size="10">mock sales</text>
+</svg>
