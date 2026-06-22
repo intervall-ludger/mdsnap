@@ -35,15 +35,17 @@ pub fn copy_assets(
     refs: &[Reference],
     md_dir: &Path,
     assets_dir: &Path,
-) -> Result<Vec<CopiedAsset>> {
+) -> Result<(Vec<CopiedAsset>, Vec<String>)> {
     let base = md_dir
         .canonicalize()
         .unwrap_or_else(|_| md_dir.to_path_buf());
     let mut copied = Vec::new();
+    let mut skipped = Vec::new();
     let mut used_names: HashSet<String> = HashSet::new();
     let mut bundled_by_source: HashMap<PathBuf, (String, String)> = HashMap::new();
     for reference in refs {
         let Some(source) = resolve_within(&base, &reference.path) else {
+            skipped.push(reference.path.clone());
             continue;
         };
         let (bundled, sha256) = match bundled_by_source.get(&source) {
@@ -66,7 +68,7 @@ pub fn copy_assets(
             sha256,
         });
     }
-    Ok(copied)
+    Ok((copied, skipped))
 }
 
 fn unique_name(source: &Path, used: &mut HashSet<String>) -> String {

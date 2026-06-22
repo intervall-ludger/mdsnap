@@ -28,13 +28,23 @@ pub fn inspect(start: &Path) -> Result<Option<GitInfo>> {
     let remote_url = repo
         .find_remote("origin")
         .ok()
-        .and_then(|remote| remote.url().map(str::to_string));
+        .and_then(|remote| remote.url().map(scrub_credentials));
     Ok(Some(GitInfo {
         commit,
         branch,
         dirty,
         remote_url,
     }))
+}
+
+/// Remove `user:password@` credentials from a remote URL before recording it.
+fn scrub_credentials(url: &str) -> String {
+    match (url.find("://"), url.find('@')) {
+        (Some(scheme_end), Some(at)) if at > scheme_end => {
+            format!("{}{}", &url[..scheme_end + 3], &url[at + 1..])
+        }
+        _ => url.to_string(),
+    }
 }
 
 /// The uncommitted changes (working tree + index vs HEAD) as a unified diff.

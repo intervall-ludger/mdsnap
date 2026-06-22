@@ -34,6 +34,12 @@ enum Command {
         /// bundle even when referenced assets are uncommitted (not reproducible)
         #[arg(long)]
         allow_dirty: bool,
+        /// overwrite the output directory if it is not empty
+        #[arg(short, long)]
+        force: bool,
+        /// fail if a referenced asset is missing
+        #[arg(long)]
+        strict: bool,
     },
     /// Verify a bundle's assets against its snapshot.json
     Verify {
@@ -49,12 +55,21 @@ fn main() -> Result<()> {
             out,
             diff,
             allow_dirty,
-        } => snap(&input, &out, diff, allow_dirty),
+            force,
+            strict,
+        } => snap(&input, &out, diff, allow_dirty, force, strict),
         Command::Verify { bundle } => verify(&bundle),
     }
 }
 
-fn snap(input: &Path, out: &Path, diff: bool, allow_dirty: bool) -> Result<()> {
+fn snap(
+    input: &Path,
+    out: &Path,
+    diff: bool,
+    allow_dirty: bool,
+    force: bool,
+    strict: bool,
+) -> Result<()> {
     if !input.exists() {
         bail!("input markdown not found: {}", input.display());
     }
@@ -69,11 +84,32 @@ fn snap(input: &Path, out: &Path, diff: bool, allow_dirty: bool) -> Result<()> {
         .context("input has no file name")?
         .to_os_string();
 
+    // refuse a non-empty output directory unless --force (then start clean)
+    let non_empty = out
+        .read_dir()
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false);
+    if non_empty {
+        if force {
+            std::fs::remove_dir_all(out)?;
+        } else {
+            bail!(
+                "output directory {} is not empty; use --force to overwrite",
+                out.display()
+            );
+        }
+    }
     std::fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
 
     // 1. copy referenced assets into the bundle
     let refs = markdown::find_refs(&content);
-    let copied = assets::copy_assets(&refs, &md_dir, &out.join("assets"))?;
+    let (copied, skipped) = assets::copy_assets(&refs, &md_dir, &out.join("assets"))?;
+    if strict && !skipped.is_empty() {
+        bail!(
+            "{} referenced asset(s) missing (--strict): {skipped:?}",
+            skipped.len()
+        );
+    }
 
     // 2. per-asset git status + reproducibility gate
     let statuses: Vec<AssetStatus> = copied
@@ -88,6 +124,7 @@ fn snap(input: &Path, out: &Path, diff: bool, allow_dirty: bool) -> Result<()> {
                 eprintln!("  {} ({})", asset.original, status.as_str());
             }
         }
+        let _ = std::fs::remove_dir_all(out.join("assets")); // don't leave a half-bundle
         bail!("bundle would not be reproducible; commit the assets or re-run with --allow-dirty");
     }
 
@@ -141,7 +178,7 @@ fn snap(input: &Path, out: &Path, diff: bool, allow_dirty: bool) -> Result<()> {
         })
         .collect();
     let snap = snapshot::Snapshot {
-        source: input.display().to_string(),
+        source: report_name.to_string_lossy().to_string(),
         created_at: chrono::Utc::now().to_rfc3339(),
         reproducible,
         assets: asset_entries,
