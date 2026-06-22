@@ -19,6 +19,7 @@ cargo install --path .
 mdsnap snap report.md -o bundle/
 mdsnap snap report.md -o bundle/ --diff          # also save the uncommitted diff
 mdsnap snap report.md -o bundle/ --allow-dirty   # bundle even if assets are uncommitted
+mdsnap snap report.md -o bundle/ --zip           # write bundle.zip (one shareable file)
 mdsnap verify bundle/                            # check the bundled assets are intact
 ```
 

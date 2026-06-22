@@ -40,6 +40,9 @@ enum Command {
         /// fail if a referenced asset is missing
         #[arg(long)]
         strict: bool,
+        /// write the bundle as a single <out>.zip and remove the directory
+        #[arg(long)]
+        zip: bool,
     },
     /// Verify a bundle's assets against its snapshot.json
     Verify {
@@ -57,7 +60,8 @@ fn main() -> Result<()> {
             allow_dirty,
             force,
             strict,
-        } => snap(&input, &out, diff, allow_dirty, force, strict),
+            zip,
+        } => snap(&input, &out, diff, allow_dirty, force, strict, zip),
         Command::Verify { bundle } => verify(&bundle),
     }
 }
@@ -69,6 +73,7 @@ fn snap(
     allow_dirty: bool,
     force: bool,
     strict: bool,
+    zip: bool,
 ) -> Result<()> {
     if !input.exists() {
         bail!("input markdown not found: {}", input.display());
@@ -190,6 +195,35 @@ fn snap(
     )?;
 
     print_summary(input, out, diff, &snap);
+    if zip {
+        let zip_path = out.with_extension("zip");
+        zip_dir(out, &zip_path)?;
+        std::fs::remove_dir_all(out)?;
+        println!("  zipped -> {}", zip_path.display());
+    }
+    Ok(())
+}
+
+/// Write every file under `dir` into a single zip archive at `zip_path`.
+fn zip_dir(dir: &Path, zip_path: &Path) -> Result<()> {
+    use std::io::Write;
+    let file = std::fs::File::create(zip_path)?;
+    let mut writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        for entry in std::fs::read_dir(&current)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let rel = path.strip_prefix(dir)?.to_string_lossy().into_owned();
+                writer.start_file(rel, options)?;
+                writer.write_all(&std::fs::read(&path)?)?;
+            }
+        }
+    }
+    writer.finish()?;
     Ok(())
 }
 
