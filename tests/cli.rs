@@ -115,6 +115,62 @@ fn verify_detects_tampering() {
     assert!(!tampered.success(), "verify must detect a changed asset");
 }
 
+#[test]
+fn flags_stale_generated_image() {
+    let tmp = std::env::temp_dir().join("mdsnap_provenance");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(tmp.join("plots")).unwrap();
+    run_git(&tmp, &["init", "-q"]);
+    run_git(&tmp, &["config", "user.email", "t@t"]);
+    run_git(&tmp, &["config", "user.name", "t"]);
+    std::fs::write(tmp.join("make_plots.py"), "plt.savefig('plots/a.svg')\n").unwrap();
+    std::fs::write(tmp.join("plots/a.svg"), "<svg/>").unwrap();
+    std::fs::write(tmp.join("logo.svg"), "<svg/>").unwrap();
+    std::fs::write(
+        tmp.join("report.md"),
+        "![chart](plots/a.svg)\n![logo](logo.svg)\n",
+    )
+    .unwrap();
+    run_git(&tmp, &["add", "-A"]);
+    run_git(&tmp, &["commit", "-qm", "init"]);
+
+    // committed state: nothing stale
+    let out = tmp.join("bundle");
+    assert!(mdsnap_snap(&tmp.join("report.md"), &out)
+        .status()
+        .unwrap()
+        .success());
+    let snap = std::fs::read_to_string(out.join("snapshot.json")).unwrap();
+    assert!(snap.contains("\"generator\": \"make_plots.py\""));
+    assert!(snap.contains("\"provenance\": \"external\"")); // logo.svg
+    assert!(!snap.contains("generator_stale"));
+
+    // change the generator without committing -> the image is now stale
+    std::fs::write(
+        tmp.join("make_plots.py"),
+        "plt.title('x')\nplt.savefig('plots/a.svg')\n",
+    )
+    .unwrap();
+    let out2 = tmp.join("bundle2");
+    assert!(mdsnap_snap(&tmp.join("report.md"), &out2)
+        .status()
+        .unwrap()
+        .success());
+    let snap2 = std::fs::read_to_string(out2.join("snapshot.json")).unwrap();
+    assert!(snap2.contains("\"generator_stale\": true"));
+
+    // --strict-provenance turns the warning into a hard failure
+    let out3 = tmp.join("bundle3");
+    let blocked = mdsnap_snap(&tmp.join("report.md"), &out3)
+        .arg("--strict-provenance")
+        .status()
+        .unwrap();
+    assert!(
+        !blocked.success(),
+        "strict provenance must block a stale image"
+    );
+}
+
 fn run_git(dir: &Path, args: &[&str]) {
     let ok = Command::new("git")
         .current_dir(dir)

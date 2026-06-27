@@ -1,6 +1,7 @@
 mod assets;
 mod git_info;
 mod markdown;
+mod provenance;
 mod snapshot;
 
 use anyhow::{bail, Context, Result};
@@ -43,6 +44,9 @@ enum Command {
         /// write the bundle as a single <out>.zip and remove the directory
         #[arg(long)]
         zip: bool,
+        /// fail if an image looks out of date with the python code that makes it
+        #[arg(long)]
+        strict_provenance: bool,
     },
     /// Verify a bundle's assets against its snapshot.json
     Verify {
@@ -61,11 +65,22 @@ fn main() -> Result<()> {
             force,
             strict,
             zip,
-        } => snap(&input, &out, diff, allow_dirty, force, strict, zip),
+            strict_provenance,
+        } => snap(
+            &input,
+            &out,
+            diff,
+            allow_dirty,
+            force,
+            strict,
+            zip,
+            strict_provenance,
+        ),
         Command::Verify { bundle } => verify(&bundle),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn snap(
     input: &Path,
     out: &Path,
@@ -74,6 +89,7 @@ fn snap(
     force: bool,
     strict: bool,
     zip: bool,
+    strict_provenance: bool,
 ) -> Result<()> {
     if !input.exists() {
         bail!("input markdown not found: {}", input.display());
@@ -133,6 +149,26 @@ fn snap(
         bail!("bundle would not be reproducible; commit the assets or re-run with --allow-dirty");
     }
 
+    // 2b. provenance: does the recorded commit still produce each image?
+    let provenances = provenance::analyze(&md_dir, &copied);
+    let mut warned = std::collections::HashSet::new();
+    let stale: Vec<_> = copied
+        .iter()
+        .zip(&provenances)
+        .filter(|(asset, prov)| prov.stale && warned.insert(asset.bundled.clone()))
+        .collect();
+    if !stale.is_empty() {
+        eprintln!("warning: image(s) may be out of date with the code that generates them:");
+        for (asset, prov) in &stale {
+            let reason = prov.reason.as_deref().unwrap_or("generator changed");
+            eprintln!("  {} ({reason})", asset.original);
+        }
+        if strict_provenance {
+            let _ = std::fs::remove_dir_all(out.join("assets"));
+            bail!("{} image(s) look stale (--strict-provenance)", stale.len());
+        }
+    }
+
     // 3. rewrite the markdown to point at the bundled assets (in place, by span)
     let edits = copied
         .iter()
@@ -175,11 +211,15 @@ fn snap(
     let asset_entries: Vec<snapshot::AssetEntry> = copied
         .iter()
         .zip(&statuses)
-        .filter(|(asset, _)| seen.insert(asset.bundled.clone()))
-        .map(|(asset, status)| snapshot::AssetEntry {
+        .zip(&provenances)
+        .filter(|((asset, _), _)| seen.insert(asset.bundled.clone()))
+        .map(|((asset, status), prov)| snapshot::AssetEntry {
             bundled: asset.bundled.clone(),
             git_status: status.as_str().to_string(),
             sha256: asset.sha256.clone(),
+            provenance: prov.kind.as_str().to_string(),
+            generator: prov.generator.clone(),
+            generator_stale: prov.stale,
         })
         .collect();
     let snap = snapshot::Snapshot {

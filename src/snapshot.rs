@@ -18,6 +18,18 @@ pub struct AssetEntry {
     pub git_status: String,
     /// SHA-256 of the bundled file, for integrity verification
     pub sha256: String,
+    /// how the asset is produced: external / generated (heuristic)
+    pub provenance: String,
+    /// repo-relative path of the python script that generates the asset
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generator: Option<String>,
+    /// the generator changed after the image was last committed (or is dirty)
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub generator_stale: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Serialize, Deserialize)]
